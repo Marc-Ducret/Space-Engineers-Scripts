@@ -1,0 +1,22 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 16
+VisualStudioVersion = 16.0.30907.101
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AutoComponents", "AutoComponents\AutoComponents.csproj", "{70130C4D-D777-448B-9AFE-BD5DFB3C01D9}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{70130C4D-D777-448B-9AFE-BD5DFB3C01D9}.Debug|x64.ActiveCfg = Debug|x64
+		{70130C4D-D777-448B-9AFE-BD5DFB3C01D9}.Debug|x64.Build.0 = Debug|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {1F5A77A7-32BB-45AB-9E4D-450B6CD9162D}
+	EndGlobalSection
+EndGlobal

@@ -1,0 +1,22 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 16
+VisualStudioVersion = 16.0.30907.101
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AutoRefinement", "AutoRefinement\AutoRefinement.csproj", "{7EE0E3A3-D7DD-477B-AB16-2A1743DC8796}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{7EE0E3A3-D7DD-477B-AB16-2A1743DC8796}.Debug|x64.ActiveCfg = Debug|x64
+		{7EE0E3A3-D7DD-477B-AB16-2A1743DC8796}.Debug|x64.Build.0 = Debug|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {E5EC8C76-EB86-4B7A-951C-1EF688801EA9}
+	EndGlobalSection
+EndGlobal
