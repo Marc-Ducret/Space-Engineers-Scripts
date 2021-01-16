@@ -21,15 +21,33 @@ namespace IngameScript
 {
     partial class Program : MyGridProgram
     {
-        List<IMyRefinery> refineries;
-        IMyTerminalBlock raws;
-        IMyTerminalBlock ingots;
+        // Specification
+        const String factoryGroupName = "Auto Refineries";
+        const String displayPrefix = "Display Ingot";
+        const String cargoName = "Cargo Ingots";
+        const String objectType = "MyObjectBuilder_Ingot";
+        static MyFixedPoint batchSize = fromLong(1000);
+
+        static List<Target> targets = new List<Target>
+        {
+            new Target("Cobalt", 200, "CobaltOreToIngot"),
+            new Target("Gold", 0, "GoldOreToIngot"),
+            new Target("Iron", 50000, "IronOreToIngot"),
+            new Target("Magnesium", 0, "MagnesiumOreToIngot"),
+            new Target("Nickel", 10000, "NickelOreToIngot"),
+            new Target("Platinum", 0, "PlatinumOreToIngot"),
+            new Target("Silicon", 5000, "SiliconOreToIngot"),
+            new Target("Silver", 0, "SilverOreToIngot"),
+            new Target("Uranium", 0, "UraniumOreToIngot"),
+        };
+
+        // Implementation
+        List<IMyProductionBlock> factories;
+        IMyTerminalBlock cargo;
         IMyTextPanel panel_good;
         IMyTextPanel panel_ok;
         IMyTextPanel panel_bad;
-
-        // How much to queue at once of one component in a producer
-        MyFixedPoint queueAmount;
+        int actualTarget;
 
         public Program()
         {
@@ -37,24 +55,18 @@ namespace IngameScript
             init();
         }
 
-        List<String> refinery_names = new List<String> {
-            "Auto Refinery 1"
-        };
-
         public void init() {
-            raws = GridTerminalSystem.GetBlockWithName("Cargo Raw");
-            ingots = GridTerminalSystem.GetBlockWithName("Cargo Ingots");
+            cargo = GridTerminalSystem.GetBlockWithName(cargoName);
 
-            refineries = new List<IMyRefinery>();
-            foreach(String s in refinery_names) {
-                refineries.Add(GridTerminalSystem.GetBlockWithName(s) as IMyRefinery);
-            }
+            factories = new List<IMyProductionBlock>();
+            IMyBlockGroup factory_group = GridTerminalSystem.GetBlockGroupWithName(factoryGroupName);
+            factory_group.GetBlocksOfType(factories);
 
-            panel_good = GridTerminalSystem.GetBlockWithName("Display Ingot Good") as IMyTextPanel;
-            panel_ok   = GridTerminalSystem.GetBlockWithName("Display Ingot Ok") as IMyTextPanel;
-            panel_bad  = GridTerminalSystem.GetBlockWithName("Display Ingot Bad") as IMyTextPanel;
+            panel_good = GridTerminalSystem.GetBlockWithName(displayPrefix + " Good") as IMyTextPanel;
+            panel_ok   = GridTerminalSystem.GetBlockWithName(displayPrefix + " Ok") as IMyTextPanel;
+            panel_bad  = GridTerminalSystem.GetBlockWithName(displayPrefix + " Bad") as IMyTextPanel;
 
-            queueAmount = fromLong(1000);
+            actualTarget = 0;
         }
 
         static MyFixedPoint fromLong(long v) {
@@ -72,24 +84,15 @@ namespace IngameScript
 
             public Target(String t, long a, String r)
             {
-                target = new MyItemType("MyObjectBuilder_Ingot", t);
+                target = new MyItemType(objectType, t);
                 recipe = new MyDefinitionId();
                 bool _ = MyDefinitionId.TryParse("MyObjectBuilder_BlueprintDefinition", r, out recipe);
                 amount = fromLong(a);
             }
-        };
 
-        List<Target> targets = new List<Target>
-        {
-            new Target("Cobalt", 0, "CobaltOreToIngot"),
-            new Target("Gold", 0, "GoldOreToIngot"),
-            new Target("Iron", 50000, "IronOreToIngot"),
-            new Target("Magnesium", 0, "MagnesiumOreToIngot"),
-            new Target("Nickel", 10000, "NickelOreToIngot"),
-            new Target("Platinum", 0, "PlatinumOreToIngot"),
-            new Target("Silicon", 5000, "SiliconOreToIngot"),
-            new Target("Silver", 0, "SilverOreToIngot"),
-            new Target("Uranium", 0, "UraniumOreToIngot"),
+            public MyFixedPoint batch() {
+                return MyFixedPoint.Min(batchSize, fromLong(toLong(amount) / 4));
+            }
         };
 
         public void Main(string argument, UpdateType updateSource)
@@ -97,16 +100,16 @@ namespace IngameScript
             var quantities = new Dictionary<MyItemType, MyFixedPoint>();
 
             // Init quantities from the content of the coffer
-            IMyInventory inventory = ingots.GetInventory();
+            IMyInventory inventory = cargo.GetInventory();
             foreach(Target target in targets) {
                 quantities.Add(target.target, inventory.GetItemAmount(target.target));
             }
 
-            var usage = new Dictionary<IMyRefinery, long>();
-            foreach(IMyRefinery refinery in refineries) {
+            var usage = new Dictionary<IMyProductionBlock, long>();
+            foreach(IMyProductionBlock factory in factories) {
                 List<MyProductionItem> queue = new List<MyProductionItem>();
-                refinery.GetQueue(queue);
-                usage.Add(refinery, queue.Count());
+                factory.GetQueue(queue);
+                usage.Add(factory, queue.Count());
                 foreach(MyProductionItem prod in queue) {
                     foreach(Target target in targets) {
                         if (target.recipe != prod.BlueprintId) continue;
@@ -115,31 +118,33 @@ namespace IngameScript
                 }
             }
 
-            int actualRefinery = 0;
-            while (usage[refineries[actualRefinery]] > 3)
+            int actualFactory = 0;
+            while (usage[factories[actualFactory]] > 3)
             {
-                actualRefinery++;
-                // No free refinery
-                if (actualRefinery >= refineries.Count()) { goto Displays; }
+                actualFactory++;
+                // No free factory
+                if (actualFactory >= factories.Count()) { goto Displays; }
             }
-            int actualTarget = 0;
-            while (targets[actualTarget].amount - quantities[targets[actualTarget].target] <= queueAmount)
+            while (targets[actualTarget].amount - quantities[targets[actualTarget].target] <= targets[actualTarget].batch())
             {
                 actualTarget++;
                 // Nothing to produce
-                if (actualTarget >= targets.Count()) { goto Displays; }
+                if (actualTarget >= targets.Count()) {
+                    actualTarget = 0;
+                    goto Displays;
+                }
             }
             // Iterate over targets to produce, one queue item by one queue item,
-            // and assign them to refiniries
+            // and assign them to factories
             while (true)
             {
-                refineries[actualRefinery].AddQueueItem(targets[actualTarget].recipe, queueAmount);
-                usage[refineries[actualRefinery]]++;
-                quantities[targets[actualTarget].target] += queueAmount;
+                factories[actualFactory].AddQueueItem(targets[actualTarget].recipe, targets[actualTarget].batch());
+                usage[factories[actualFactory]]++;
+                quantities[targets[actualTarget].target] += targets[actualTarget].batch();
 
                 // Find next target
                 int nextTarget = (actualTarget + 1) % targets.Count();
-                while (targets[nextTarget].amount - quantities[targets[nextTarget].target] <= queueAmount)
+                while (targets[nextTarget].amount - quantities[targets[nextTarget].target] <= targets[nextTarget].batch())
                 {
                     nextTarget++;
                     nextTarget %= targets.Count();
@@ -148,16 +153,16 @@ namespace IngameScript
                 }
                 actualTarget = nextTarget;
 
-                // Find next refinery
-                int nextRefinery = (actualRefinery + 1) % refineries.Count();
-                while (usage[refineries[nextRefinery]] > 3)
+                // Find next factory
+                int nextFactory = (actualFactory + 1) % factories.Count();
+                while (usage[factories[nextFactory]] > 3)
                 {
-                    nextRefinery++;
-                    nextRefinery %= refineries.Count();
-                    // No free refinery left
-                    if (nextRefinery == actualRefinery) { goto Displays; }
+                    nextFactory++;
+                    nextFactory %= factories.Count();
+                    // No free factory left
+                    if (nextFactory == actualFactory) { goto Displays; }
                 }
-                actualRefinery = nextRefinery;
+                actualFactory = nextFactory;
             }
 
             // Update displays
@@ -170,7 +175,11 @@ namespace IngameScript
                 long bs = toLong(inventory.GetItemAmount(target.target));
                 long staged = toLong(quantities[target.target]) - bs;
                 long expected = toLong(target.amount);
-                if(bs + staged >= expected) {
+                long batch = toLong(target.batch());
+
+                if (expected == 0 && bs == 0) continue;
+
+                if(bs + staged + batch > expected && staged == 0) {
                     sb_good.AppendFormat("{0} {1}/{2}/{3}\n", target.target.SubtypeId, bs, staged, expected);
                 } else if (bs + staged >= expected / 3) {
                     sb_ok.AppendFormat("{0} {1}/{2}/{3}\n", target.target.SubtypeId, bs, staged, expected);
