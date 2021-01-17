@@ -19,156 +19,180 @@ using VRageMath;
 
 namespace IngameScript {
     partial class Program : MyGridProgram {
-        private const string            BLOCK_PREFIX = "TestArm";
-        private       IMyMotorStator    rotorBase;
-        private       IMyMotorStator    hingeBase;
-        private       IMyMotorStator    rotorMiddle;
-        private       IMyMotorStator    hingeEnd;
-        private       IMyShipController controller;
+        private readonly IMyMotorStator    rotorBase;
+        private readonly IMyMotorStator    hingeBase;
+        private readonly IMyMotorStator    rotorMiddle;
+        private readonly IMyMotorStator    hingeEnd;
+        private readonly IMyShipController controller;
 
-        private IMyTextSurface debugPanel;
+        private readonly IMyTextSurface debugPanel;
+        private readonly IMyTextSurface controllerPanel;
 
-        private double armLength;
-        private double armLength2;
-        private double middleHingesDistance;
+        private readonly double armLength;
 
-        // TODO how to compute this?
-        private double hingeBaseSign    = -1;
+        private readonly double hingeBaseSign;
+        private readonly double rotorMiddleSign;
+        private readonly double rotorMiddleOffset;
 
         private Vector3D targetPosition;
 
-        private const double ANGLE_OFFSET_FULL_VELOCITY = Math.PI / 30;
-        private const double VELOCITY_FACTOR              = 10; // in rad/s/ras : rad/s per radian of error
+        private const double VELOCITY_FACTOR = 10; // in rad/s/ras : rad/s per radian of error
+        private const double TARGET_SPEED    = 0.02;
 
-        private const double MAX_ANGLE_OUT_OF_LIMIT         = Math.PI / 90;
-        private const double ANGLE_LIMIT_ADJUST_SPEED       = Math.PI / 32;
-        private const double ANGLE_LIMIT_ADJUST_SPEED_ANGLE = Math.PI / 32;
-        private const double ANGLE_LIMIT_MARGIN             = Math.PI / 90;
+        private bool locked;
 
-        private const double TARGET_SPEED = 0.02;
+        struct PID {
+            private double p, i, d;
+            private double lastError;
+            private double intError;
 
-        bool lockr;
+            public string information;
 
-        struct PID
-        {
-            double P, I, D;
-            public double lastError;
-            public double IntError;
-
-            public void Init(double nP, double nI, double nD)
-            {
-                P = nP;
-                I = nI;
-                D = nD;
+            public void Init(double nP, double nI, double nD) {
+                p         = nP;
+                i         = nI;
+                d         = nD;
                 lastError = double.NaN;
-                IntError = 0.0;
+                intError  = 0.0;
             }
 
-            public double eval(double error)
-            {
+            public double Eval(double error, double deltaTime) {
                 double res = 0;
-                res += P * error;
-                if (error * lastError < 0) IntError = 0;
-                res += I * IntError;
-                if (!double.IsNaN(lastError)) res += (error - lastError) * D;
-                lastError = error;
-                IntError += error;
-                
+                res += p  * error;
+                if (error * lastError < 0) intError = 0;
+                res += i  * intError * deltaTime;
+                double derivativeError            = (error - lastError) / deltaTime;
+                if (!double.IsNaN(lastError)) res += derivativeError * d;
+                lastError =  error;
+                intError  += error;
+
+                information = $"e={F(error)} de/dt={F(derivativeError)} S(e dt)={F(intError)}";
+
                 return res;
             }
         }
 
-        PID PIDrotor;
-        PID PIDbase;
-        PID PIDmid;
+        private PID pidRotor;
+        private PID pidBase;
+        private PID pidMid;
+
+        private string blockPrefix;
+
+        private T GetBlock<T>(string name) {
+            if (blockPrefix == null) {
+                int dotIndex = Me.CustomName.IndexOf('.');
+                if (dotIndex <= 0)
+                    throw new Exception($"Name `{Me.CustomName}` does not have format `<prefix>.<name>`.");
+                blockPrefix = Me.CustomName.Substring(0, dotIndex);
+            }
+
+            string           nameWithPrefix = $"{blockPrefix}.{name}";
+            IMyTerminalBlock block          = GridTerminalSystem.GetBlockWithName(nameWithPrefix);
+            if (block == null) throw new Exception($"Cannot find block `{nameWithPrefix}`");
+            if (block is T) return (T) block;
+            throw new Exception($"`{nameWithPrefix}` is not of type {typeof(T)}.");
+        }
 
         public Program() {
             Runtime.UpdateFrequency = UpdateFrequency.Update1;
-            rotorBase = (IMyMotorStator) GridTerminalSystem.GetBlockWithName($"{BLOCK_PREFIX}.RotorBase");
-            hingeBase = (IMyMotorStator) GridTerminalSystem.GetBlockWithName($"{BLOCK_PREFIX}.HingeBase");
-            rotorMiddle = (IMyMotorStator) GridTerminalSystem.GetBlockWithName($"{BLOCK_PREFIX}.RotorMiddle");
-            hingeEnd = (IMyMotorStator) GridTerminalSystem.GetBlockWithName($"{BLOCK_PREFIX}.HingeEnd");
-            controller = (IMyShipController) GridTerminalSystem.GetBlockWithName($"{BLOCK_PREFIX}.Controller");
-
-
-            // debugPanel = ((IMyCockpit) GridTerminalSystem.GetBlockWithName($"{BLOCK_PREFIX}.Controller")).GetSurface(0);
-            debugPanel = (IMyTextSurface) GridTerminalSystem.GetBlockWithName($"{BLOCK_PREFIX}.DebugPanel");
+            rotorBase               = GetBlock<IMyMotorStator>("RotorBase");
+            hingeBase               = GetBlock<IMyMotorStator>("HingeBase");
+            rotorMiddle             = GetBlock<IMyMotorStator>("RotorMiddle");
+            hingeEnd                = GetBlock<IMyMotorStator>("HingeEnd");
+            IMyCockpit cockpit = GetBlock<IMyCockpit>("Controller");
+            controller      = cockpit;
+            controllerPanel = cockpit.GetSurface(0);
+            debugPanel      = GetBlock<IMyTextSurface>("DebugPanel");
 
             targetPosition = hingeEnd.GetPosition() - hingeBase.GetPosition();
 
+            if (Math.Abs(Vector3D.Distance(hingeBase.GetPosition(),   rotorMiddle.GetPosition()) -
+                         Vector3D.Distance(rotorMiddle.GetPosition(), hingeEnd.GetPosition())) > 0.1)
+                throw new Exception("Arms have different lengths.");
+
             armLength = Vector3D.Distance(hingeBase.GetPosition(), rotorMiddle.GetPosition());
-            armLength2 = Vector3D.Distance(hingeEnd.GetPosition(), rotorMiddle.GetPosition());
 
-            PIDrotor.Init(1, 0, 0);
-            PIDbase.Init(1, 0, 0);
-            PIDmid.Init(1, 0, 0);
+            hingeBaseSign = -Math.Sign(Vector3D.Dot(rotorBase.Top.WorldMatrix.Forward, hingeBase.WorldMatrix.Forward));
+            rotorMiddleSign = -Math.Sign(Vector3D.Dot(rotorBase.Top.WorldMatrix.Right, rotorMiddle.WorldMatrix.Up));
+            Vector3D rotorMiddleToBase = hingeBase.GetPosition() - rotorMiddle.GetPosition();
+            rotorMiddleOffset = Math.Atan2(rotorMiddle.WorldMatrix.Forward.Dot(rotorMiddleToBase),
+                                           rotorMiddle.WorldMatrix.Right.Dot(rotorMiddleToBase));
 
-            lockr = true;
+            pidRotor.Init(1, 0.5, 0.01);
+            pidBase.Init(1, 0.5, 0.01);
+            pidMid.Init(1, 0.5, 0.01);
+
+            locked = true;
         }
 
-        public void Save() {
-        }
+        public void Save() { }
 
-        public void LockStator(IMyMotorStator stator)
-        {
+        private void LockStator(IMyMotorStator stator) {
             stator.TargetVelocityRad = 0;
-            stator.RotorLock = true;
-        }
-        public void UnlockStator(IMyMotorStator stator)
-        {
-            stator.TargetVelocityRad = 0;
-            stator.RotorLock = false;
+            stator.RotorLock         = true;
         }
 
-        public void Lock()
-        {
+        private void UnlockStator(IMyMotorStator stator) {
+            stator.TargetVelocityRad = 0;
+            stator.RotorLock         = false;
+        }
+
+        private void Lock() {
             LockStator(rotorBase);
             LockStator(hingeBase);
             LockStator(rotorMiddle);
         }
 
-        public void Unlock()
-        {
+        private void Unlock() {
             UnlockStator(rotorBase);
             UnlockStator(hingeBase);
             UnlockStator(rotorMiddle);
         }
 
+        private static string F(double x) => $"{x:+0.00;-0.00}";
+        private static string A(double x) => F(Math.IEEERemainder(x, 2 * Math.PI));
+
         public void Main(string argument, UpdateType updateSource) {
             if ((updateSource & UpdateType.Trigger) != 0) {
                 if (argument == "Lock") {
-                    if (lockr) {lockr = false; Unlock();}
-                    else {lockr = true; Lock();}
+                    if (locked) {
+                        locked = false;
+                        Unlock();
+                    } else {
+                        locked = true;
+                        Lock();
+                    }
                 }
+
                 if (argument == "Reset") targetPosition = hingeEnd.GetPosition() - hingeBase.GetPosition();
             }
+
             Vector3D baseX = rotorBase.WorldMatrix.Forward;
             Vector3D baseY = rotorBase.WorldMatrix.Right;
             Vector3D baseZ = rotorBase.WorldMatrix.Down;
 
-            Vector3D baseForward = hingeBase.WorldMatrix.Forward;
             Vector3D curPos = hingeEnd.GetPosition() - hingeBase.GetPosition();
 
             targetPosition = Vector3D.ClampToSphere(targetPosition, 1.95 * armLength);
+            // TODO enforce out of central cylinder
             double       distance  = targetPosition.Length();
             Vector3D     direction = Vector3D.Normalize(targetPosition);
             const double epsilon   = Math.PI / 360;
-            double midAngle = Clamp(2*Math.Acos(distance / 2 / armLength), epsilon, Math.PI - epsilon);
 
-            double directionAngleHeight = Math.PI / 2 - Angle(direction, rotorBase.WorldMatrix.Up);
-
-            double hingeBaseAngle = Clamp(Math.PI / 2 - midAngle / 2 - directionAngleHeight,
-                                          -Math.PI / 2                    + epsilon,
-                                          +Math.PI / 2                    - epsilon);
+            double armsAngle = Clamp(2 * Math.Asin(distance / armLength / 2), epsilon, Math.PI - epsilon);
+            double pitch     = (Math.PI - armsAngle) / 2 - Angle(direction, rotorBase.WorldMatrix.Up);
 
             Vector2D directionPlane =
                 Vector2D.Normalize(baseX.Dot(direction) * Vector2D.UnitX + baseY.Dot(direction) * Vector2D.UnitY);
-            double rotorBaseAngle = Math.Atan2(directionPlane.Y, directionPlane.X);
-            if (!lockr)
-            {
-                StatorControl(rotorBase, rotorBaseAngle, ref PIDrotor);
-                StatorControl(hingeBase, hingeBaseAngle, ref PIDbase);
-                StatorControl(rotorMiddle, -midAngle, ref PIDmid);
+
+            double rotorBaseAngle   = Math.Atan2(directionPlane.Y, directionPlane.X);
+            double hingeBaseAngle   = Clamp(hingeBaseSign * pitch, -Math.PI / 2 + epsilon, +Math.PI / 2 - epsilon);
+            double rotorMiddleAngle = rotorMiddleSign * armsAngle + rotorMiddleOffset;
+
+            if (!locked) {
+                StatorControl(rotorBase,   rotorBaseAngle,   ref pidRotor);
+                StatorControl(hingeBase,   hingeBaseAngle,   ref pidBase);
+                StatorControl(rotorMiddle, rotorMiddleAngle, ref pidMid);
             }
 
             Vector3D deltaPosition = targetPosition - curPos;
@@ -176,17 +200,22 @@ namespace IngameScript {
             targetPosition +=
                 Vector3D.TransformNormal(Vector3D.ClampToSphere(controller.MoveIndicator, 1), controller.WorldMatrix) *
                 TARGET_SPEED;
-            Echo($"e={Vector3D.Distance(curPos,                 targetPosition):F1}");
-            debugPanel.WriteText($@"target X={baseX.Dot(targetPosition):F3} Y={baseY.Dot(targetPosition):F3} Z={baseZ.Dot(targetPosition):F3}
-cur X={baseX.Dot(curPos):F3} Y={baseY.Dot(curPos):F3} Z={baseZ.Dot(curPos):F3}
-hbf {baseForward}
-e={Vector3D.Distance(curPos, targetPosition):F3}
-rotor target={rotorBaseAngle:F3} cur {rotorBase.Angle:F3} targspd {rotorBase.TargetVelocityRad:F3} ie {PIDrotor.IntError:F3}
-base target={hingeBaseAngle:F3} cur {hingeBase.Angle:F3} targspd {hingeBase.TargetVelocityRad:F3} ie {PIDbase.IntError:F3}
-mid target={2 * Math.PI - midAngle:F3} cur {rotorMiddle.Angle:F3} targspd {rotorMiddle.TargetVelocityRad:F3}  ie {PIDmid.IntError:F3} le {PIDmid.lastError:F3}
-lock {lockr}
-al {armLength:F3} al2 {armLength2:F3}
-");
+            Echo($"e={Vector3D.Distance(curPos, targetPosition):F1}");
+
+            string information =
+                $@"
+trg: X={F(baseX.Dot(targetPosition))} Y={F(baseY.Dot(targetPosition))} Z={F(baseZ.Dot(targetPosition))}
+cur: X={F(baseX.Dot(curPos))} Y={F(baseY.Dot(curPos))} Z={F(baseZ.Dot(curPos))}
+e={F(Vector3D.Distance(curPos, targetPosition))}
+rot: trg={A(rotorBaseAngle)} cur={A(rotorBase.Angle)} trg-spd={F(rotorBase.TargetVelocityRad)} pid=[{pidRotor.information}]
+bas: trg={A(hingeBaseAngle)} cur={A(hingeBase.Angle)} trg-spd={F(hingeBase.TargetVelocityRad)} pid=[{pidBase.information}]
+mid: trg={A(rotorMiddleAngle)} cur={A(rotorMiddle.Angle)} trg-spd={F(rotorMiddle.TargetVelocityRad)} pid=[{pidMid.information}]
+hbs={F(hingeBaseSign)} rms={F(rotorMiddleSign)} rmo={A(rotorMiddleOffset)}
+lock={locked}
+al={F(armLength)} aa={F(armsAngle)} pitch={F(pitch)}
+";
+            debugPanel.WriteText(information);
+            controllerPanel.WriteText(information);
         }
 
         private static double Clamp(double value, double min, double max) {
@@ -199,14 +228,8 @@ al {armLength:F3} al2 {armLength2:F3}
 
         private void StatorControl(IMyMotorStator stator, double targetAngle, ref PID pid) {
             double deltaAngle = Math.IEEERemainder(targetAngle - stator.Angle, 2 * Math.PI);
-
-            stator.TargetVelocityRad = (float)(VELOCITY_FACTOR * pid.eval(deltaAngle));
-
-            /*double factor = Clamp(deltaAngle, -ANGLE_OFFSET_FULL_VELOCITY, +ANGLE_OFFSET_FULL_VELOCITY) /
-                            ANGLE_OFFSET_FULL_VELOCITY;
-            Echo($"{stator.CustomName} | {factor:F2} | {deltaAngle:F2}");
-            stator.TargetVelocityRad = (float) (factor * FULL_VELOCITY);*/
+            double deltaTime  = Clamp(Runtime.TimeSinceLastRun.TotalSeconds, 0.01, 1);
+            stator.TargetVelocityRad = (float) (VELOCITY_FACTOR * pid.Eval(deltaAngle, deltaTime));
         }
     }
 }
-
