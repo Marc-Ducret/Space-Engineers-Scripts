@@ -38,7 +38,7 @@ namespace IngameScript
             new Target("Girder", 1000, "GirderComponent"),
             new Target("InteriorPlate", 5000, "InteriorPlate"),
             new Target("LargeTube", 1000, "LargeTube"),
-            new Target("MetalGrid", 1000, "MetalGrid"),
+            new Target("MetalGrid", 200, "MetalGrid"),
             new Target("Motor", 1000, "MotorComponent"),
             new Target("PowerCell", 1000, "PowerCell"),
             new Target("RadioCommunication", 500, "RadioCommunicationComponent"),
@@ -105,7 +105,7 @@ namespace IngameScript
 
             public MyFixedPoint batch()
             {
-                if (toLong(amount) == 0) return batchSize; 
+                if (toLong(amount) == 0) return batchSize;
                 else return MyFixedPoint.Min(batchSize, fromLong(toLong(amount) / 4));
             }
         };
@@ -113,12 +113,14 @@ namespace IngameScript
         public void Main(string argument, UpdateType updateSource)
         {
             var quantities = new Dictionary<MyItemType, MyFixedPoint>();
+            var future_quantities = new Dictionary<MyItemType, MyFixedPoint>();
 
             // Init quantities from the content of the coffer
             IMyInventory inventory = cargo.GetInventory();
             foreach (Target target in targets)
             {
                 quantities.Add(target.target, inventory.GetItemAmount(target.target));
+                future_quantities.Add(target.target, 0);
             }
 
             var usage = new Dictionary<IMyProductionBlock, long>();
@@ -133,59 +135,57 @@ namespace IngameScript
                     {
                         if (target.recipe != prod.BlueprintId) continue;
                         quantities[target.target] += prod.Amount;
+                        future_quantities[target.target] += prod.Amount;
                     }
                 }
             }
 
             int actualFactory = 0;
-            while (usage[factories[actualFactory]] > 3)
-            {
-                actualFactory++;
-                // No free factory
-                if (actualFactory >= factories.Count()) { goto Displays; }
-            }
-            while (targets[actualTarget].amount - quantities[targets[actualTarget].target] <= targets[actualTarget].batch())
-            {
-                actualTarget++;
-                // Nothing to produce
-                if (actualTarget >= targets.Count()) {
-                    actualTarget = 0;
-                    goto Displays;
-                }
-            }
             // Iterate over targets to produce, one queue item by one queue item,
             // and assign them to factories
-            while (true)
+            for (int cur_it = 0; cur_it < 2; ++cur_it)
             {
-                factories[actualFactory].AddQueueItem(targets[actualTarget].recipe, targets[actualTarget].batch());
-                usage[factories[actualFactory]]++;
-                quantities[targets[actualTarget].target] += targets[actualTarget].batch();
-
-                // Find next target
-                int nextTarget = (actualTarget + 1) % targets.Count();
-                while (targets[nextTarget].amount - quantities[targets[nextTarget].target] <= targets[nextTarget].batch())
+                while (true)
                 {
-                    nextTarget++;
-                    nextTarget %= targets.Count();
-                    // No target left
-                    if (nextTarget == actualTarget) { goto Displays; }
-                }
-                actualTarget = nextTarget;
+                    // Find next factory
+                    int nextFactory = actualFactory;
+                    do
+                    {
+                        nextFactory++;
+                        nextFactory %= factories.Count();
+                    } while (nextFactory != actualFactory &&
+                            usage[factories[nextFactory]] > 3 * (1 - cur_it));
+                    actualFactory = nextFactory;
+                    if (usage[factories[nextFactory]] > 3 * (1 - cur_it)) break;
 
-                // Find next factory
-                int nextFactory = (actualFactory + 1) % factories.Count();
-                while (usage[factories[nextFactory]] > 3)
-                {
-                    nextFactory++;
-                    nextFactory %= factories.Count();
-                    // No free factory left
-                    if (nextFactory == actualFactory) { goto Displays; }
+                    // Find next target
+                    int nextTarget = actualTarget;
+                    do
+                    {
+                        nextTarget++;
+                        nextTarget %= targets.Count();
+                        // No target left
+                    } while (nextTarget != actualTarget &&
+                            ((cur_it == 0 &&
+                              future_quantities[targets[nextTarget].target] > 0) ||
+                             targets[nextTarget].amount
+                             - quantities[targets[nextTarget].target]
+                             <= targets[nextTarget].batch()));
+                    actualTarget = nextTarget;
+                    if ((cur_it == 0 &&
+                        future_quantities[targets[nextTarget].target] > 0) ||
+                       targets[nextTarget].amount
+                       - quantities[targets[nextTarget].target]
+                       <= targets[nextTarget].batch()) break;
+
+                    factories[actualFactory].AddQueueItem(targets[actualTarget].recipe, targets[actualTarget].batch());
+                    usage[factories[actualFactory]]++;
+                    quantities[targets[actualTarget].target] += targets[actualTarget].batch();
+                    future_quantities[targets[actualTarget].target] += targets[actualTarget].batch();
                 }
-                actualFactory = nextFactory;
             }
 
         // Update displays
-        Displays:
             StringBuilder sb_good = new StringBuilder("", 100);
             StringBuilder sb_ok = new StringBuilder("", 100);
             StringBuilder sb_bad = new StringBuilder("", 100);
