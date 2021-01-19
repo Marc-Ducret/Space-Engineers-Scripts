@@ -36,8 +36,9 @@ namespace IngameScript {
 
         private Vector3D targetPosition;
 
-        private const double VELOCITY_FACTOR = 10; // in rad/s/ras : rad/s per radian of error
-        private const double TARGET_SPEED    = 0.02;
+        private const double VELOCITY_FACTOR       = 10; // in rad/s/ras : rad/s per radian of error
+        private const double TARGET_SPEED          = 0.02;
+        private const float  HINGE_END_SENSITIVITY = 0.1f;
 
         private bool locked;
 
@@ -93,6 +94,13 @@ namespace IngameScript {
             throw new Exception($"`{nameWithPrefix}` is not of type {typeof(T)}.");
         }
 
+        private double AngleTowards(IMyMotorStator stator, IMyTerminalBlock pointer, Vector3D direction) {
+            Vector3D restDir = Vector3D.Normalize(pointer.GetPosition() - stator.GetPosition());
+            return Math.Atan2(stator.WorldMatrix.Right.Dot(direction), stator.WorldMatrix.Forward.Dot(direction)) -
+                   Math.Atan2(stator.Top.WorldMatrix.Right.Dot(restDir), stator.Top.WorldMatrix.Forward.Dot(restDir));
+        }
+
+
         public Program() {
             Runtime.UpdateFrequency = UpdateFrequency.Update1;
             rotorBase               = GetBlock<IMyMotorStator>("RotorBase");
@@ -112,11 +120,11 @@ namespace IngameScript {
 
             armLength = Vector3D.Distance(hingeBase.GetPosition(), rotorMiddle.GetPosition());
 
-            hingeBaseSign = -Math.Sign(Vector3D.Dot(rotorBase.Top.WorldMatrix.Forward, hingeBase.WorldMatrix.Forward));
-            rotorMiddleSign = -Math.Sign(Vector3D.Dot(rotorBase.Top.WorldMatrix.Right, rotorMiddle.WorldMatrix.Up));
+            hingeBaseSign = -Math.Sign(Vector3D.Dot(targetPosition, hingeBase.WorldMatrix.Forward));
+            rotorMiddleSign = -Math.Sign(Vector3D.Dot(hingeBase.WorldMatrix.Right, rotorMiddle.WorldMatrix.Up)) *
+                              hingeBaseSign;
             Vector3D rotorMiddleToBase = hingeBase.GetPosition() - rotorMiddle.GetPosition();
-            rotorMiddleOffset = Math.Atan2(rotorMiddle.WorldMatrix.Forward.Dot(rotorMiddleToBase),
-                                           rotorMiddle.WorldMatrix.Right.Dot(rotorMiddleToBase));
+            rotorMiddleOffset = AngleTowards(rotorMiddle, hingeEnd, Vector3D.Normalize(rotorMiddleToBase));
 
             pidRotor.Init(1, 0.5, 0.01);
             pidBase.Init(1, 0.5, 0.01);
@@ -141,12 +149,14 @@ namespace IngameScript {
             LockStator(rotorBase);
             LockStator(hingeBase);
             LockStator(rotorMiddle);
+            LockStator(hingeEnd);
         }
 
         private void Unlock() {
             UnlockStator(rotorBase);
             UnlockStator(hingeBase);
             UnlockStator(rotorMiddle);
+            UnlockStator(hingeEnd);
         }
 
         private static string F(double x) => $"{x:+0.00;-0.00}";
@@ -168,8 +178,11 @@ namespace IngameScript {
             }
 
             Vector3D baseX = rotorBase.WorldMatrix.Forward;
-            Vector3D baseY = rotorBase.WorldMatrix.Right;
-            Vector3D baseZ = rotorBase.WorldMatrix.Down;
+            Vector3D baseY = rotorBase.WorldMatrix.Left;
+            Vector3D baseZ = rotorBase.WorldMatrix.Up;
+
+            Func<Vector3D, string> P = value =>
+                $"X={F(baseX.Dot(value))} Y={F(baseY.Dot(value))} Z={F(baseZ.Dot(value))}";
 
             Vector3D curPos = hingeEnd.GetPosition() - hingeBase.GetPosition();
 
@@ -182,10 +195,7 @@ namespace IngameScript {
             double armsAngle = Clamp(2 * Math.Asin(distance / armLength / 2), epsilon, Math.PI - epsilon);
             double pitch     = (Math.PI - armsAngle) / 2 - Angle(direction, rotorBase.WorldMatrix.Up);
 
-            Vector2D directionPlane =
-                Vector2D.Normalize(baseX.Dot(direction) * Vector2D.UnitX + baseY.Dot(direction) * Vector2D.UnitY);
-
-            double rotorBaseAngle   = Math.Atan2(directionPlane.Y, directionPlane.X);
+            double rotorBaseAngle   = AngleTowards(rotorBase, hingeEnd, direction);
             double hingeBaseAngle   = Clamp(hingeBaseSign * pitch, -Math.PI / 2 + epsilon, +Math.PI / 2 - epsilon);
             double rotorMiddleAngle = rotorMiddleSign * armsAngle + rotorMiddleOffset;
 
@@ -193,6 +203,8 @@ namespace IngameScript {
                 StatorControl(rotorBase,   rotorBaseAngle,   ref pidRotor);
                 StatorControl(hingeBase,   hingeBaseAngle,   ref pidBase);
                 StatorControl(rotorMiddle, rotorMiddleAngle, ref pidMid);
+
+                hingeEnd.TargetVelocityRad = HINGE_END_SENSITIVITY * controller.RotationIndicator.X;
             }
 
             Vector3D deltaPosition = targetPosition - curPos;
@@ -204,8 +216,8 @@ namespace IngameScript {
 
             string information =
                 $@"
-trg: X={F(baseX.Dot(targetPosition))} Y={F(baseY.Dot(targetPosition))} Z={F(baseZ.Dot(targetPosition))}
-cur: X={F(baseX.Dot(curPos))} Y={F(baseY.Dot(curPos))} Z={F(baseZ.Dot(curPos))}
+trg: {P(targetPosition)}
+cur: {P(curPos)}
 e={F(Vector3D.Distance(curPos, targetPosition))}
 rot: trg={A(rotorBaseAngle)} cur={A(rotorBase.Angle)} trg-spd={F(rotorBase.TargetVelocityRad)} pid=[{pidRotor.information}]
 bas: trg={A(hingeBaseAngle)} cur={A(hingeBase.Angle)} trg-spd={F(hingeBase.TargetVelocityRad)} pid=[{pidBase.information}]
@@ -213,6 +225,10 @@ mid: trg={A(rotorMiddleAngle)} cur={A(rotorMiddle.Angle)} trg-spd={F(rotorMiddle
 hbs={F(hingeBaseSign)} rms={F(rotorMiddleSign)} rmo={A(rotorMiddleOffset)}
 lock={locked}
 al={F(armLength)} aa={F(armsAngle)} pitch={F(pitch)}
+rb-fwd : {P(rotorBase.WorldMatrix.Forward)}
+rb-up  : {P(rotorBase.WorldMatrix.Up)}
+rbt-fwd: {P(rotorBase.Top.WorldMatrix.Forward)}
+rbt-up : {P(rotorBase.Top.WorldMatrix.Up)}
 ";
             debugPanel.WriteText(information);
             controllerPanel.WriteText(information);
