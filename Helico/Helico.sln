@@ -5,7 +5,16 @@ VisualStudioVersion = 16.0.30717.126
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Helico", "Helico\Helico.csproj", "{92EAAE25-1356-4FC5-828D-3CAE9AB30554}"
 EndProject
+Project("{D954291E-2A0B-460D-934E-DC6B0785DB48}") = "MixinTest", "..\Shared\MixinTest\MixinTest.shproj", "{61EBA249-19F3-48B6-A25B-A4CEE90168BA}"
+EndProject
+Project("{D954291E-2A0B-460D-934E-DC6B0785DB48}") = "Utils", "..\Shared\Utils\Utils.shproj", "{CE83D4D3-A464-4BEB-A106-B14D898C2404}"
+EndProject
 Global
+	GlobalSection(SharedMSBuildProjectFiles) = preSolution
+		..\Shared\MixinTest\MixinTest.projitems*{61eba249-19f3-48b6-a25b-a4cee90168ba}*SharedItemsImports = 13
+		..\Shared\Utils\Utils.projitems*{92eaae25-1356-4fc5-828d-3cae9ab30554}*SharedItemsImports = 4
+		..\Shared\Utils\Utils.projitems*{ce83d4d3-a464-4beb-a106-b14d898c2404}*SharedItemsImports = 13
+	EndGlobalSection
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
 	EndGlobalSection

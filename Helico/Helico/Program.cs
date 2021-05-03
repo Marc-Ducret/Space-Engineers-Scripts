@@ -42,20 +42,49 @@ namespace IngameScript
         //
         // to learn more about ingame scripts.
 
-        bool dampeners;
-        double altitude;
-        bool vertDamp;
-        IMyGyro g;
-        IMyShipController sc;
-        IMyTextPanel lcd;
-        List<IMyThrust> thrusters;
-        double mass;
+        int maxspeed = 5;
+
+        double[] rotAngles = {0.05, 0.1, 0.2, 0.35, 0.5}; // cos of angle of inclination
+        double[] accelerations = { 0.2, 0.5, 1, 2, 5 }; // m/s^2
+        string[] speedNames = { "Dock", "Approach", "Normal", "Fast", "Very Fast" };
+
+        int curSpeed;
+
+        int tick = 0;
+
+        void SetSpd(int spd)
+        {
+            if (spd >= maxspeed) spd = maxspeed - 1;
+            if (spd < 0) spd = 0;
+            curSpeed = spd;
+        }
+
+        double maxAltDrift = 1; // meters
+        double maxSpdDrift = 0.5; // m/s
+
+        // Maximum possible thrust
+        double fullthmax = 250000;
+        // Maximum possible thrust per thruster
+        double thmax = 90000;
+
+        double targAltitude;
+        double targSpd;
+
+        
+
+        bool hDamp;
+        bool manualAlt;
+        bool vDamp;
+        readonly IMyGyro g;
+        readonly IMyShipController sc;
+        readonly IMyTextPanel lcd;
+        readonly List<IMyThrust> thrusters;
+        readonly double mass;
         double lastAltitude;
         double backT;
         double frontT;
         double distback;
         double distfront;
-        bool dock;
 
         Vector3D lastHeading;
 
@@ -63,7 +92,7 @@ namespace IngameScript
         {
             double res = 0.0;
             sc.TryGetPlanetElevation(MyPlanetElevation.Sealevel, out res);
-            return res;
+            return res + 1550;
         }
 
         public Program()
@@ -84,13 +113,16 @@ namespace IngameScript
             lcd = GridTerminalSystem.GetBlockWithName("LCD") as IMyTextPanel;
             thrusters = new List<IMyThrust>();
             GridTerminalSystem.GetBlockGroupWithName("Thrusters").GetBlocksOfType<IMyThrust>(thrusters);
-            dampeners = false;
-            altitude = GetAltitude();
+            hDamp = false;
+            manualAlt = true;
+            vDamp = false;
+            targAltitude = GetAltitude();
             mass = sc.CalculateShipMass().PhysicalMass;
-            dock = true;
+            curSpeed = 0;
             lastHeading = sc.WorldMatrix.Forward;
         }
 
+        // Convert a position to the ship coordinates
         public Vector3D PosToShip(Vector3D vec)
         {
             Vector3D bodyPosition = Vector3D.TransformNormal(vec - sc.WorldMatrix.Translation, MatrixD.Transpose(sc.WorldMatrix));
@@ -98,11 +130,11 @@ namespace IngameScript
             return bodyPosition;
         }
 
-        public void SetThrust(double d, bool enable)
+        public void SetThrust(double d)
         {
-            double fullmax = 250000;
-            if (d > fullmax) d = fullmax;   
-            double thmax = 90000;
+            
+            if (d > fullthmax) d = fullthmax;   
+            
             double COMZ = PosToShip(sc.CenterOfMass).Z;
             List<double> dists = new List<double>();
             foreach (var x in thrusters) dists.Add(PosToShip(x.GetPosition()).Z - COMZ);
@@ -130,39 +162,21 @@ namespace IngameScript
             if(m > thmax)
             {
                 double coeff = thmax / m;
-                backTh *= thmax;
-                frontTh *= thmax;
+                backTh *= coeff;
+                frontTh *= coeff;
             }
             distback = backLever;
             distfront = frontLever;
-            if (enable)
-            {
-                foreach (int x in front) thrusters[x].ThrustOverride = (float)frontTh;
-                foreach (int x in back) thrusters[x].ThrustOverride = (float)backTh;
-            }
-        }
+            foreach (int x in front) thrusters[x].ThrustOverride = (float)frontTh;
+            foreach (int x in back) thrusters[x].ThrustOverride = (float)backTh;
 
-        /*public void SetThrust(double d)
-        {
-            foreach (var x in thrusters) x.ThrustOverride = (float)d/4;
-        }*/
+        }
         public void ClearThrust()
         {
             foreach (var x in thrusters) x.ThrustOverride = 0;
         }
 
         public void Save(){}
-
-        double Clamp(double v, double min, double max)
-        {
-            return Math.Max(min, Math.Min(max, v));
-        }
-
-        Vector3D AngleAxis (Vector3D v1, Vector3D v2)
-        {
-            double angle = Math.Acos(v1.Dot(v2));
-            return angle * Vector3D.Normalize(v1.Cross(v2));
-        }     
         
         public void SetRotSpd(Vector3D rotspd)
         {
@@ -175,12 +189,18 @@ namespace IngameScript
         {
             if ((updateSource & UpdateType.Trigger) != 0)
             {
-                if (argument == "Damp") dampeners = !dampeners;
-                if (argument == "Dock") dock = !dock;
-                if (argument == "Vert") vertDamp = !vertDamp;
-                if (argument == "VertTarg") altitude = GetAltitude();
+                if (argument == "HDamp") hDamp = !hDamp;
+                if (argument == "ManualAlt")
+                {
+                    manualAlt = !manualAlt;
+                    targAltitude = GetAltitude();
+                    targSpd = 0;
+                }
+                if (argument == "VDamp") vDamp = !vDamp;
+                if (argument == "Spd+") SetSpd(curSpeed + 1);
+                if (argument == "Spd-") SetSpd(curSpeed - 1);
             }
-            bool cdampeners = dampeners;
+            bool trueHDamp = hDamp;
             Vector3D pos = sc.CenterOfMass;
             Vector3D spd = sc.GetShipVelocities().LinearVelocity;
             Vector3D grav = Vector3D.Normalize(sc.GetTotalGravity());
@@ -190,29 +210,14 @@ namespace IngameScript
             Vector3D MoveIndic = sc.MoveIndicator;
             Vector3D COM = PosToShip(sc.CenterOfMass);
 
+            if (gravin.Y > 0) hDamp = false;
+
+
 
             //orientation
-            if (MoveIndic.X != 0 || MoveIndic.Z != 0) cdampeners = false;
-            double inclCommand = dock ? 0.05 : 0.5;
+            if (MoveIndic.X != 0 || MoveIndic.Z != 0) trueHDamp = false;
+            double inclCommand = rotAngles[curSpeed];
             double angleToRotSpd = 1.0;
-            /*Vector3D target;
-            target.Y = -1;
-            if (cdampeners)
-            {
-                target.Z = Clamp(-(spdin.Z) * 0.05, -0.5, 0.5);
-                target.X = Clamp(-(spdin.X) * 0.05, -0.5, 0.5);
-            }
-            else
-            {
-                target.X = inclCommand * MoveIndic.X;
-                target.Z = inclCommand * MoveIndic.Z;
-            }
-            target.Normalize();
-            Vector3D AA = AngleAxis(target, gravin);
-            double yawCommand = 0.02;
-            AA.Y -= yawCommand * sc.RotationIndicator.Y;
-            AA *= angleToRotSpd;
-            if(!newc) SetRotSpd(AA);*/
 
             // new orientation
             lastHeading -= grav * grav.Dot(lastHeading);
@@ -225,7 +230,7 @@ namespace IngameScript
 
             Vector3D ntarget = grav;
             double targetX = 0.0, targetZ = 0.0;
-            if (cdampeners)
+            if (trueHDamp)
             {
                 targetZ = Clamp(-(spdin.Z) * 0.05, -0.5, 0.5);
                 targetX = Clamp(-(spdin.X) * 0.05, -0.5, 0.5);
@@ -257,59 +262,53 @@ namespace IngameScript
 
 
 
+            // new altitude
+            double curAltitude = GetAltitude();
+            double curVSpeed = (curAltitude - lastAltitude) * 60;
+            double targAcc = 0;
+            if (vDamp) targAcc = Clamp(-targSpd, -accelerations[curSpeed], accelerations[curSpeed]);
+            if (MoveIndic.Y != 0) targAcc = MoveIndic.Y * accelerations[curSpeed];
+            targSpd += targAcc / 60;
+            targSpd = Clamp(targSpd, curVSpeed - maxSpdDrift, curVSpeed + maxSpdDrift);
+            targAltitude += targSpd / 60;
+            targAltitude = Clamp(targAltitude, curAltitude - maxAltDrift, curAltitude + maxAltDrift);
+            double compTargSpd = targSpd + (targAltitude - curAltitude);
+            double compTargAcc = targAcc + gravNorm / (-gravin.Y) + (compTargSpd - curVSpeed);
 
-
-
-            //altitude
-            double altChangeBys = 5.0; // 3 m/s
-            altitude += altChangeBys / 60.0 * MoveIndic.Y;
-            mass = sc.CalculateShipMass().PhysicalMass;
-            double thThrust = mass * gravNorm / (-gravin.Y);
-            double newAltitude = GetAltitude();
-            double vertSpeed = (newAltitude - lastAltitude) * 60;//m/s
-            
-            
-            /*double angleX = Math.Atan2(gravin.X, -gravin.Y);
-            double angleZ = Math.Atan2(gravin.Z, -gravin.Y);
-            if (MoveIndic.X != 0 || MoveIndic.Z != 0) cdampeners = false;
-            double targetZ;
-            double targetX;
-            if (cdampeners){
-                targetZ = Clamp(-(spdin.Z) * 0.05, -0.6, 0.6);
-                targetX = Clamp(-(spdin.X) * 0.05, -0.6, 0.6);
-            }
-            else{
-                targetX = inclCommand * MoveIndic.X;
-                targetZ = inclCommand * MoveIndic.Z;
-            }
-            g.Roll = (float)(angleZ - targetZ);
-            g.Yaw = -(float)(angleX - targetX);
-            g.Pitch = (float)(yaw * 0.1);*/
-
-            double targetVSpeed = (altitude - GetAltitude()) / 2 + altChangeBys * MoveIndic.Y;
-            double targetThrust = (targetVSpeed - vertSpeed) * 10000;
-
-            //if (vertDamp) SetThrust(thThrust + targetThrust);
-            //else ClearThrust();
-            SetThrust(thThrust + targetThrust, vertDamp);
-            if (!vertDamp) ClearThrust();
-
-
-            lcd.WriteText($@"grav X={gravin.X:F3} Y={gravin.Y:F3} Z={gravin.Z:F3}
+            if (manualAlt) { ClearThrust(); }
+            else { SetThrust(compTargAcc * mass); }
+            if (tick >= 10)
+            {
+                tick = 0;
+                /*lcd.WriteText($@"grav X={gravin.X:F3} Y={gravin.Y:F3} Z={gravin.Z:F3}
 Spd X={spdin.X:F3} Y={spdin.Y:F3} Z={spdin.Z:F3}
 AA X={axis.X:F3} Y={axis.Y:F3} Z={axis.Z:F3}
 NT {ntargetin} {headtargetin}
-damp {dampeners} vd {vertDamp} dock {dock}
-Alt cur {GetAltitude():F3} targ {altitude:F3}
+hDamp {hDamp} vDamp {vDamp} ManualAlt {manualAlt}
+Spd: {speedNames[curSpeed]}
+Alt cur {curAltitude:F3} targ {targAltitude:F3}
+Spd cur {curVSpeed:F10} targ {targSpd:F10} ctarg {compTargSpd:F10}
+Acc targ {targAcc:F10} ctarg {compTargAcc:F10}
 pos {sc.GetPosition()} scal {Vector3D.Dot(grav, sc.GetPosition())}
-Thrust cur {thrusters[0].CurrentThrust:F3} targ {thThrust + targetThrust:F3} targvspd {targetVSpeed:F3}
-mass {mass:F3} gravNorm {gravNorm:F3} theoThrust {thThrust}
 cam X {COM.X:F3} Y {COM.Y:F3} Z {COM.Z:F3}
 th back {backT:F3} front {frontT:F3}
 dist back {distback:F3} front{distfront:F3}
-");
+");*/
 
-            lastAltitude = newAltitude;
+                lcd.WriteText($@"Helico control software
+Horizontal Dampeners (4) {OnOff(hDamp)}
+Vertical Dampeners (5) {OnOff(vDamp)}
+Manual Altitude (6) {OnOff(manualAlt)}
+Current Altitude {curAltitude:F2}m
+Vertical Speed {targSpd:F2}m/s
+Speed mode (^8/v9) {speedNames[curSpeed]}
+");
+            }
+            else tick++;
+
+            
+
+            lastAltitude = curAltitude;
         }
     }
 }
